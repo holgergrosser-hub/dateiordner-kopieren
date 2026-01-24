@@ -7,8 +7,32 @@ const GAS_URL = import.meta?.env?.VITE_GAS_URL || ''
 
 const LOCAL_STORAGE_GAS_URL_KEY = 'folder-workflow.gasUrl'
 
-const USE_NETLIFY_PROXY = import.meta?.env?.PROD
+const isRunningOnNetlify = () => {
+  try {
+    const host = window.location.hostname || ''
+    return host.endsWith('.netlify.app')
+  } catch {
+    return false
+  }
+}
+
+const USE_NETLIFY_PROXY = Boolean(import.meta?.env?.PROD) || isRunningOnNetlify()
 const NETLIFY_PROXY_ENDPOINT = '/.netlify/functions/gas-proxy'
+
+const isDebugEnabled = () => {
+  try {
+    return new URLSearchParams(window.location.search).has('debug')
+  } catch {
+    return false
+  }
+}
+
+const maskUrl = (value) => {
+  const s = String(value || '').trim()
+  if (!s) return '(leer)'
+  if (s.length <= 18) return s
+  return `${s.slice(0, 10)}…${s.slice(-8)}`
+}
 
 // Hilfsfunktion: Datum-Muster im Dateinamen finden
 const findDatePatterns = (fileName) => {
@@ -213,6 +237,8 @@ const spinnerCSS = `
 `
 
 export default function App() {
+  const debug = isDebugEnabled()
+
   const [gasUrlManual, setGasUrlManual] = useState(() => {
     try {
       return localStorage.getItem(LOCAL_STORAGE_GAS_URL_KEY) || ''
@@ -511,6 +537,21 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {debug && (
+            <div style={styles.alert('info')}>
+              <strong>Debug:</strong>
+              <div style={{ marginTop: '8px', fontFamily: 'monospace', fontSize: '13px' }}>
+                <div>mode: {import.meta?.env?.MODE}</div>
+                <div>prod: {String(import.meta?.env?.PROD)}</div>
+                <div>useProxy: {String(USE_NETLIFY_PROXY)}</div>
+                <div>VITE_GAS_URL (env): {maskUrl(GAS_URL)}</div>
+                <div>gasUrlManual (localStorage): {maskUrl(gasUrlManual)}</div>
+                <div>effectiveGasUrl: {maskUrl(effectiveGasUrl)}</div>
+              </div>
+            </div>
+          )}
+
           {error && <div style={styles.alert('error')}>❌ {error}</div>}
           {success && <div style={styles.alert('success')}>{success}</div>}
 
