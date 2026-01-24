@@ -467,7 +467,7 @@ export default function App() {
           </div>
 
           {/* Messages */}
-          {!USE_NETLIFY_PROXY && !GAS_URL && (
+          {!USE_NETLIFY_PROXY && !effectiveGasUrl && (
             <div style={styles.alert('info')}>
               <strong>Konfiguration:</strong> <code>VITE_GAS_URL</code> ist in diesem Build leer.
               <br />
