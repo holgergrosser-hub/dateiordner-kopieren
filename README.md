@@ -68,4 +68,4 @@ Hinweis: Lokal (ohne Netlify Proxy) wird weiterhin das Legacy-Action `copyFolder
 
 Eine passende Referenz-Implementierung liegt in `apps-script/Code.gs` (im Repo) und kann 1:1 in ein GAS-Projekt kopiert werden.
 
-Wichtig für große Ordner: Das Kopieren läuft über einen Zeit-Trigger (`processCopyJobs`) weiter, damit keine HTTP-Timeouts entstehen.
+Wichtig für große Ordner: Das Kopieren läuft in kleinen Schritten bei jedem `copyFolderStatus`-Poll weiter, damit keine HTTP-Timeouts entstehen (kein Trigger nötig).

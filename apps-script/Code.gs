@@ -11,7 +11,7 @@
 // WICHTIG:
 // - Web-App Deployment: "Execute as: Me" + Zugriff passend setzen
 // - Script braucht Drive-Berechtigungen.
-// - Für große Ordner: Job läuft über einen Zeit-Trigger weiter.
+// - Für große Ordner: Job läuft in kleinen Schritten weiter (bei jedem Status-Poll).
 
 const CONFIG = {
   PARENT_FOLDER_ID: '1mKeo-zXSb6l5rk5APFjosSWxLX5niXdM',
@@ -20,10 +20,10 @@ const CONFIG = {
 const JOBS_KEY = 'copyJobs.pending'
 const JOB_PREFIX = 'copyJob:'
 
-// Wie viel Arbeit pro Trigger-Lauf?
-const RUN_BUDGET_MS = 240000 // ~4 Minuten
-const MAX_FILE_COPIES_PER_RUN = 40
-const MAX_SUBFOLDERS_PER_RUN = 15
+// Wie viel Arbeit pro Status-Poll? (klein halten, damit Web-App/Proxy nicht timeouten)
+const STATUS_RUN_BUDGET_MS = 2500
+const STATUS_MAX_FILE_COPIES = 20
+const STATUS_MAX_SUBFOLDERS = 8
 
 function doGet() {
   return jsonResponse({ status: 'ok', message: 'Ordner-Workflow API aktiv' })
@@ -167,8 +167,7 @@ function copyFolderStartAction_(sourceUrl, newFolderName) {
     }
 
     saveJob_(job)
-    enqueueJob_(jobId)
-    ensureWorkerTrigger_()
+    // Kein Trigger: Fortschritt erfolgt in kleinen Chunks bei copyFolderStatus.
 
     return {
       success: true,
@@ -189,6 +188,19 @@ function copyFolderStatusAction_(jobId) {
   const job = loadJob_(jobId)
   if (!job) return { success: false, message: 'Job nicht gefunden' }
 
+  // Bei jedem Poll einen kleinen Arbeits-Chunk ausführen.
+  if (job.status === 'running') {
+    const lock = LockService.getScriptLock()
+    if (lock.tryLock(5000)) {
+      try {
+        processCopyJobChunk_(job, STATUS_RUN_BUDGET_MS, STATUS_MAX_FILE_COPIES, STATUS_MAX_SUBFOLDERS)
+        saveJob_(job)
+      } finally {
+        lock.releaseLock()
+      }
+    }
+  }
+
   return {
     success: true,
     jobId: job.jobId,
@@ -201,138 +213,95 @@ function copyFolderStatusAction_(jobId) {
   }
 }
 
-function ensureWorkerTrigger_() {
-  const triggers = ScriptApp.getProjectTriggers()
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === 'processCopyJobs') return
-  }
+function processCopyJobChunk_(job, budgetMs, maxFileCopies, maxSubfolders) {
+  const start = Date.now()
+  const budgetUntil = start + (budgetMs || 0)
 
-  ScriptApp.newTrigger('processCopyJobs').timeBased().everyMinutes(1).create()
-}
+  let copiedThisRun = 0
+  let foldersCreatedThisRun = 0
 
-function processCopyJobs() {
-  const lock = LockService.getScriptLock()
-  if (!lock.tryLock(5000)) return
-
-  try {
-    const start = Date.now()
-
-    const pending = getPendingJobs_()
-    if (pending.length === 0) return
-
-    // Nimm immer den ältesten Job
-    const jobId = pending[0]
-    const job = loadJob_(jobId)
-    if (!job || job.status !== 'running') {
-      dequeueJob_(jobId)
+  while (Date.now() < budgetUntil) {
+    if (!job.queue || job.queue.length === 0) {
+      job.status = 'done'
+      job.progress.pendingFolders = 0
+      job.updatedAt = new Date().toISOString()
       return
     }
 
-    const budgetUntil = start + RUN_BUDGET_MS
+    const task = job.queue[0]
 
-    let copiedThisRun = 0
-    let foldersCreatedThisRun = 0
-
-    while (Date.now() < budgetUntil) {
-      if (!job.queue || job.queue.length === 0) {
-        job.status = 'done'
-        job.progress.pendingFolders = 0
-        job.updatedAt = new Date().toISOString()
-        saveJob_(job)
-        dequeueJob_(jobId)
-        return
-      }
-
-      const task = job.queue[0]
-
-      if (!task.initialized) {
-        const init = initFolderTask_(task.sourceId)
-        task.files = init.files
-        task.folders = init.folders
-        task.initialized = true
-        job.progress.pendingFolders = job.queue.length
-        job.updatedAt = new Date().toISOString()
-        saveJob_(job)
-        // nach Init raus, damit der Lauf nicht zu lange wird
-        return
-      }
-
-      // 1) Dateien kopieren
-      while (
-        task.files.length > 0 &&
-        copiedThisRun < MAX_FILE_COPIES_PER_RUN &&
-        Date.now() < budgetUntil
-      ) {
-        const f = task.files.shift()
-        try {
-          const file = DriveApp.getFileById(f.id)
-          const targetFolder = DriveApp.getFolderById(task.targetId)
-          file.makeCopy(f.name, targetFolder)
-          job.progress.copiedFiles++
-          copiedThisRun++
-        } catch (err) {
-          job.status = 'error'
-          job.lastError = String(err)
-          job.updatedAt = new Date().toISOString()
-          saveJob_(job)
-          dequeueJob_(jobId)
-          return
-        }
-      }
-
-      // 2) Unterordner erstellen + Tasks enqueuen
-      while (
-        task.files.length === 0 &&
-        task.folders.length > 0 &&
-        foldersCreatedThisRun < MAX_SUBFOLDERS_PER_RUN &&
-        Date.now() < budgetUntil
-      ) {
-        const sf = task.folders.shift()
-        try {
-          const targetFolder = DriveApp.getFolderById(task.targetId)
-          const created = targetFolder.createFolder(sf.name)
-          job.progress.createdFolders++
-          foldersCreatedThisRun++
-
-          job.queue.push({
-            sourceId: sf.id,
-            targetId: created.getId(),
-            initialized: false,
-            files: [],
-            folders: [],
-          })
-        } catch (err) {
-          job.status = 'error'
-          job.lastError = String(err)
-          job.updatedAt = new Date().toISOString()
-          saveJob_(job)
-          dequeueJob_(jobId)
-          return
-        }
-      }
-
-      // 3) Task abgeschlossen?
-      if (task.files.length === 0 && task.folders.length === 0) {
-        job.queue.shift()
-      }
-
+    if (!task.initialized) {
+      const init = initFolderTask_(task.sourceId)
+      task.files = init.files
+      task.folders = init.folders
+      task.initialized = true
       job.progress.pendingFolders = job.queue.length
       job.updatedAt = new Date().toISOString()
-      saveJob_(job)
+      // nach Init raus, damit Poll schnell bleibt
+      return
+    }
 
-      // Wenn wir in diesem Lauf nichts mehr machen dürfen, raus
-      if (copiedThisRun >= MAX_FILE_COPIES_PER_RUN && foldersCreatedThisRun >= MAX_SUBFOLDERS_PER_RUN) {
+    // 1) Dateien kopieren
+    while (task.files.length > 0 && copiedThisRun < maxFileCopies && Date.now() < budgetUntil) {
+      const f = task.files.shift()
+      try {
+        const file = DriveApp.getFileById(f.id)
+        const targetFolder = DriveApp.getFolderById(task.targetId)
+        file.makeCopy(f.name, targetFolder)
+        job.progress.copiedFiles++
+        copiedThisRun++
+      } catch (err) {
+        job.status = 'error'
+        job.lastError = String(err)
+        job.updatedAt = new Date().toISOString()
         return
       }
     }
 
-    // Budget erreicht -> speichern
+    // 2) Unterordner erstellen + Tasks enqueuen
+    while (
+      task.files.length === 0 &&
+      task.folders.length > 0 &&
+      foldersCreatedThisRun < maxSubfolders &&
+      Date.now() < budgetUntil
+    ) {
+      const sf = task.folders.shift()
+      try {
+        const targetFolder = DriveApp.getFolderById(task.targetId)
+        const created = targetFolder.createFolder(sf.name)
+        job.progress.createdFolders++
+        foldersCreatedThisRun++
+
+        job.queue.push({
+          sourceId: sf.id,
+          targetId: created.getId(),
+          initialized: false,
+          files: [],
+          folders: [],
+        })
+      } catch (err) {
+        job.status = 'error'
+        job.lastError = String(err)
+        job.updatedAt = new Date().toISOString()
+        return
+      }
+    }
+
+    // 3) Task abgeschlossen?
+    if (task.files.length === 0 && task.folders.length === 0) {
+      job.queue.shift()
+    }
+
     job.progress.pendingFolders = job.queue.length
     job.updatedAt = new Date().toISOString()
-    saveJob_(job)
-  } finally {
-    lock.releaseLock()
+
+    if (copiedThisRun >= maxFileCopies && foldersCreatedThisRun >= maxSubfolders) {
+      return
+    }
   }
+
+  job.progress.pendingFolders = job.queue ? job.queue.length : 0
+  job.updatedAt = new Date().toISOString()
 }
 
 function initFolderTask_(sourceFolderId) {
