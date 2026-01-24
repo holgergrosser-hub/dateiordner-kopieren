@@ -232,6 +232,12 @@ export default function App() {
 
   // API Call Helper - FormData (kein Content-Type Header!)
   const callAPI = async (action, params = {}) => {
+    if (!GAS_URL) {
+      throw new Error(
+        'GAS URL fehlt. Bitte VITE_GAS_URL setzen (Netlify Environment Variables oder lokal in .env).'
+      )
+    }
+
     const formData = new FormData()
     formData.append('action', action)
     Object.keys(params).forEach((key) => {
@@ -243,7 +249,22 @@ export default function App() {
       body: formData,
     })
 
-    return response.json()
+    const contentType = response.headers.get('content-type') || ''
+
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => '')
+      const snippet = bodyText ? ` Details: ${bodyText.slice(0, 200)}` : ''
+      throw new Error(`HTTP ${response.status} (${response.statusText}).${snippet}`)
+    }
+
+    if (contentType.includes('application/json')) {
+      return response.json()
+    }
+
+    // Häufigster Fall bei falscher URL: HTML (Netlify index.html) statt JSON
+    const bodyText = await response.text().catch(() => '')
+    const snippet = bodyText ? bodyText.slice(0, 200) : ''
+    throw new Error(`Antwort ist kein JSON. ${snippet}`)
   }
 
   // Ordner-Info laden (Name + Backup-Vorschlag)
@@ -417,6 +438,12 @@ export default function App() {
           </div>
 
           {/* Messages */}
+          {!GAS_URL && (
+            <div style={styles.alert('error')}>
+              ❌ <strong>Konfiguration fehlt:</strong> Setze <code>VITE_GAS_URL</code> auf die URL deiner Google Apps Script
+              Web-App (z.B. endet oft mit <code>/exec</code>). Danach neu deployen.
+            </div>
+          )}
           {error && <div style={styles.alert('error')}>❌ {error}</div>}
           {success && <div style={styles.alert('success')}>{success}</div>}
 
