@@ -3,7 +3,7 @@ import { useState } from 'react'
 // Google Apps Script Web App URL
 // Lokal: in `.env` setzen als VITE_GAS_URL=https://...
 // Netlify: Site settings → Environment variables → VITE_GAS_URL
-const GAS_URL = import.meta?.env?.VITE_GAS_URL || ''
+const GAS_URL = import.meta.env.VITE_GAS_URL || ''
 
 const LOCAL_STORAGE_GAS_URL_KEY = 'folder-workflow.gasUrl'
 
@@ -16,7 +16,7 @@ const isRunningOnNetlify = () => {
   }
 }
 
-const USE_NETLIFY_PROXY = Boolean(import.meta?.env?.PROD) || isRunningOnNetlify()
+const USE_NETLIFY_PROXY = Boolean(import.meta.env.PROD) || isRunningOnNetlify()
 const NETLIFY_PROXY_ENDPOINT = '/.netlify/functions/gas-proxy'
 
 const isDebugEnabled = () => {
@@ -542,8 +542,8 @@ export default function App() {
             <div style={styles.alert('info')}>
               <strong>Debug:</strong>
               <div style={{ marginTop: '8px', fontFamily: 'monospace', fontSize: '13px' }}>
-                <div>mode: {import.meta?.env?.MODE}</div>
-                <div>prod: {String(import.meta?.env?.PROD)}</div>
+                <div>mode: {import.meta.env.MODE}</div>
+                <div>prod: {String(import.meta.env.PROD)}</div>
                 <div>useProxy: {String(USE_NETLIFY_PROXY)}</div>
                 <div>VITE_GAS_URL (env): {maskUrl(GAS_URL)}</div>
                 <div>gasUrlManual (localStorage): {maskUrl(gasUrlManual)}</div>
