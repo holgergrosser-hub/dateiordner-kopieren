@@ -255,6 +255,7 @@ export default function App() {
   const [success, setSuccess] = useState(null)
 
   const [copyJob, setCopyJob] = useState(null)
+  const [listJob, setListJob] = useState(null)
 
   // Step 1: Ordner kopieren
   const [sourceUrl, setSourceUrl] = useState('')
@@ -298,27 +299,28 @@ export default function App() {
         }
 
         if (res.status === 'done') {
-          // Jetzt Dateien aus dem Alt-Ordner (Original) laden
-          const list = await callAPI('listFiles', { folderId: copyJob.sourceFolderId })
+          // Jetzt Dateien aus dem Alt-Ordner (Original) laden (async, chunked)
+          const started = await callAPI('listFilesStart', { folderId: copyJob.sourceFolderId })
           if (cancelled) return
 
-          if (list?.success) {
-            setFiles(list.files || [])
-
-            const allDates = []
-            for (const file of list.files || []) {
-              allDates.push(...findDatePatterns(file.name))
-            }
-            setDetectedDates([...new Set(allDates)])
-
-            setSuccess(
-              `✅ Backup "${copyJob.newFolderName}" fertig! Jetzt arbeiten wir im Alt-Ordner.`
-            )
-            setStep(2)
-          } else {
-            setError(list?.message || 'Dateiliste konnte nicht geladen werden')
+          if (!started?.success) {
+            setError(started?.message || 'Dateiliste konnte nicht gestartet werden')
+            setCopyJob(null)
+            return
           }
 
+          setFiles([])
+          setDetectedDates([])
+          setListJob({
+            jobId: started.jobId,
+            status: started.status || 'running',
+            folderId: started.folderId,
+            folderName: started.folderName,
+            progress: started.progress || null,
+          })
+
+          setSuccess(`✅ Backup "${copyJob.newFolderName}" fertig! Dateien werden geladen…`)
+          setStep(2)
           setCopyJob(null)
         }
       } catch (err) {
@@ -336,6 +338,64 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [copyJob?.jobId])
+
+  useEffect(() => {
+    if (!listJob?.jobId) return
+
+    let cancelled = false
+
+    const poll = async () => {
+      try {
+        const res = await callAPI('listFilesStatus', { jobId: listJob.jobId })
+        if (cancelled) return
+
+        if (!res || res.success !== true) {
+          setListJob(null)
+          setError(res?.message || 'Dateiliste-Status konnte nicht geladen werden')
+          return
+        }
+
+        setListJob((prev) => ({ ...prev, ...res }))
+
+        const chunk = Array.isArray(res.files) ? res.files : []
+        if (chunk.length) {
+          setFiles((prev) => [...prev, ...chunk])
+
+          const newDates = []
+          for (const file of chunk) {
+            newDates.push(...findDatePatterns(file.name))
+          }
+          if (newDates.length) {
+            setDetectedDates((prev) => [...new Set([...(prev || []), ...newDates])])
+          }
+        }
+
+        if (res.status === 'error') {
+          setListJob(null)
+          setError(res.message || 'Fehler beim Laden der Dateiliste')
+          return
+        }
+
+        if (res.status === 'done') {
+          setSuccess('✅ Dateiliste geladen. Jetzt kannst du den Ersetz-Text wählen.')
+          setListJob(null)
+          return
+        }
+      } catch (err) {
+        if (cancelled) return
+        setListJob(null)
+        setError('Verbindungsfehler: ' + err.message)
+      }
+    }
+
+    poll()
+    const id = setInterval(poll, 2000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listJob?.jobId])
 
   // API Call Helper - FormData (kein Content-Type Header!)
   const callAPI = async (action, params = {}) => {
@@ -570,6 +630,8 @@ export default function App() {
     setReplaceWith('')
     setError(null)
     setSuccess(null)
+    setCopyJob(null)
+    setListJob(null)
   }
 
   return (
@@ -775,6 +837,26 @@ export default function App() {
                   </div>
                   <div style={{ marginTop: '8px', fontSize: '13px' }}>
                     Hinweis: Große Ordner dauern mehrere Minuten. Diese Seite kann offen bleiben.
+                  </div>
+                </div>
+              )}
+
+              {listJob && (
+                <div style={styles.alert('info')}>
+                  <strong>⏳ Dateien werden geladen…</strong>
+                  <div style={{ marginTop: '8px', fontSize: '13px' }}>
+                    Status: {listJob.status || 'running'}
+                    {listJob.progress && (
+                      <>
+                        {' '}
+                        — Ordner gescannt: {listJob.progress.scannedFolders || 0}, Dateien gefunden:{' '}
+                        {listJob.progress.foundFiles || 0}, Warteschlange:{' '}
+                        {listJob.progress.pendingFolders || 0}
+                      </>
+                    )}
+                  </div>
+                  <div style={{ marginTop: '8px', fontSize: '13px' }}>
+                    Hinweis: Je nach Ordnergröße kann das ein paar Minuten dauern.
                   </div>
                 </div>
               )}

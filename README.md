@@ -59,7 +59,9 @@ Die Web-App spricht mit GAS über einen `action`-Parameter.
 - `getFolderInfo` → `{ sourceUrl }`
 - `copyFolderStart` → `{ sourceUrl, newFolderName }` → startet einen Async-Job, gibt `jobId` zurück
 - `copyFolderStatus` → `{ jobId }` → Polling, liefert `status: running|done|error` + `progress`
-- `listFiles` → `{ folderId }` → Dateien im Alt-Ordner (rekursiv)
+- `listFiles` → `{ folderId }` → Dateien im Alt-Ordner (rekursiv, sync – kann bei großen Ordnern timeouten)
+- `listFilesStart` → `{ folderId }` → startet Dateiliste-Job (async), gibt `jobId` zurück
+- `listFilesStatus` → `{ jobId }` → Polling, liefert `files`-Chunks + `progress`
 - `renameFiles` → `{ folderId, searchPattern, replacePattern }`
 
 Hinweis: Lokal (ohne Netlify Proxy) wird weiterhin das Legacy-Action `copyFolder` synchron genutzt.

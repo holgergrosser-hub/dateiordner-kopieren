@@ -146,8 +146,9 @@ export async function handler(event) {
         headers: { ...corsHeaders, 'content-type': 'application/json; charset=utf-8' },
         body: JSON.stringify({
           success: false,
+          action,
           message:
-            `Timeout waiting for GAS after ${TIMEOUT_MS}ms. ` +
+            `Timeout waiting for GAS after ${TIMEOUT_MS}ms (action: ${action}). ` +
             'This usually means the Apps Script action is slow (e.g. copying a large folder). ' +
             'Reduce folder size, or change the Apps Script to run the long task asynchronously (jobId + polling).',
         }),

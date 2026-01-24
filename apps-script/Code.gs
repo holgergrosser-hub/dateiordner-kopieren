@@ -25,6 +25,12 @@ const STATUS_RUN_BUDGET_MS = 2500
 const STATUS_MAX_FILE_COPIES = 20
 const STATUS_MAX_SUBFOLDERS = 8
 
+// Für große Ordner kann auch das Dateilisten rekursiv lange dauern.
+// Deshalb ebenfalls chunked (Job + Polling), ohne Trigger.
+const LIST_RUN_BUDGET_MS = 2500
+const LIST_MAX_FILES_PER_RUN = 120
+const LIST_MAX_FOLDERS_PER_RUN = 30
+
 function doGet() {
   return jsonResponse({ status: 'ok', message: 'Ordner-Workflow API aktiv' })
 }
@@ -50,6 +56,12 @@ function doPost(e) {
 
       case 'listFiles':
         return jsonResponse(listFilesAction_(data.folderId))
+
+      case 'listFilesStart':
+        return jsonResponse(listFilesStartAction_(data.folderId))
+
+      case 'listFilesStatus':
+        return jsonResponse(listFilesStatusAction_(data.jobId))
 
       case 'renameFiles':
         return jsonResponse(renameFilesAction_(data.folderId, data.searchPattern, data.replacePattern))
@@ -211,6 +223,160 @@ function copyFolderStatusAction_(jobId) {
     newFolderName: job.newFolderName,
     progress: job.progress,
   }
+}
+
+// -----------------------------------------------------
+// ASYNC LIST FILES (Job + Polling, liefert Chunks)
+// -----------------------------------------------------
+
+function listFilesStartAction_(folderId) {
+  try {
+    if (!folderId) return { success: false, message: 'Ordner-ID erforderlich' }
+    const root = DriveApp.getFolderById(folderId)
+
+    const jobId = Utilities.getUuid()
+    const job = {
+      jobId: jobId,
+      type: 'listFiles',
+      status: 'running',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      rootFolderId: folderId,
+      folderName: root.getName(),
+      lastError: null,
+      progress: {
+        scannedFolders: 0,
+        foundFiles: 0,
+        pendingFolders: 1,
+      },
+      queue: [
+        {
+          folderId: folderId,
+          path: '',
+        },
+      ],
+    }
+
+    saveJob_(job)
+
+    return {
+      success: true,
+      jobId: jobId,
+      status: 'running',
+      folderId: folderId,
+      folderName: root.getName(),
+      progress: job.progress,
+      message: 'Dateiliste-Job gestartet',
+    }
+  } catch (err) {
+    return { success: false, message: String(err) }
+  }
+}
+
+function listFilesStatusAction_(jobId) {
+  if (!jobId) return { success: false, message: 'jobId ist erforderlich' }
+  const job = loadJob_(jobId)
+  if (!job) return { success: false, message: 'Job nicht gefunden' }
+  if (job.type !== 'listFiles') return { success: false, message: 'Falscher Job-Typ' }
+
+  var chunk = []
+
+  if (job.status === 'running') {
+    const lock = LockService.getScriptLock()
+    if (lock.tryLock(5000)) {
+      try {
+        chunk = processListFilesJobChunk_(
+          job,
+          LIST_RUN_BUDGET_MS,
+          LIST_MAX_FILES_PER_RUN,
+          LIST_MAX_FOLDERS_PER_RUN
+        )
+        saveJob_(job)
+      } finally {
+        lock.releaseLock()
+      }
+    }
+  }
+
+  return {
+    success: true,
+    jobId: job.jobId,
+    status: job.status,
+    message: job.lastError || null,
+    folderId: job.rootFolderId,
+    folderName: job.folderName,
+    progress: job.progress,
+    files: chunk,
+  }
+}
+
+function processListFilesJobChunk_(job, budgetMs, maxFiles, maxFolders) {
+  const start = Date.now()
+  const budgetUntil = start + (budgetMs || 0)
+
+  var out = []
+  var foldersScannedThisRun = 0
+
+  while (Date.now() < budgetUntil) {
+    if (!job.queue || job.queue.length === 0) {
+      job.status = 'done'
+      job.progress.pendingFolders = 0
+      job.updatedAt = new Date().toISOString()
+      return out
+    }
+
+    if (foldersScannedThisRun >= maxFolders) break
+
+    const next = job.queue.shift()
+    foldersScannedThisRun++
+
+    try {
+      const folder = DriveApp.getFolderById(next.folderId)
+
+      const itFiles = folder.getFiles()
+      while (itFiles.hasNext()) {
+        const f = itFiles.next()
+        job.progress.foundFiles++
+
+        out.push({
+          id: f.getId(),
+          name: f.getName(),
+          path: next.path || '',
+          mimeType: f.getMimeType(),
+          url: f.getUrl(),
+        })
+      }
+
+      const itFolders = folder.getFolders()
+      while (itFolders.hasNext()) {
+        const sf = itFolders.next()
+        job.queue.push({
+          folderId: sf.getId(),
+          path: (next.path || '') + sf.getName() + '/',
+        })
+      }
+    } catch (err) {
+      job.status = 'error'
+      job.lastError = String(err)
+      job.updatedAt = new Date().toISOString()
+      job.progress.pendingFolders = job.queue ? job.queue.length : 0
+      return out
+    }
+
+    // Nach jedem Ordner: Progress updaten
+    job.progress.scannedFolders++
+    job.progress.pendingFolders = job.queue.length
+    job.updatedAt = new Date().toISOString()
+
+    // Chunk-Grenze: nur zwischen Ordnern abbrechen (sonst verlieren wir Items).
+    if (out.length >= maxFiles) {
+      return out
+    }
+  }
+
+  job.progress.pendingFolders = job.queue ? job.queue.length : 0
+  job.updatedAt = new Date().toISOString()
+  return out
 }
 
 function processCopyJobChunk_(job, budgetMs, maxFileCopies, maxSubfolders) {
