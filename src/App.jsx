@@ -278,12 +278,40 @@ export default function App() {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
+          accept: 'application/json',
         },
         body: JSON.stringify({ action, params }),
       })
 
-      const result = await response.json().catch(() => null)
-      if (!result) throw new Error('Antwort ist kein JSON (Proxy)')
+      const contentType = response.headers.get('content-type') || ''
+      const text = await response.text().catch(() => '')
+
+      let result = null
+      try {
+        result = text ? JSON.parse(text) : null
+      } catch {
+        result = null
+      }
+
+      if (!response.ok) {
+        const serverMessage = result && typeof result === 'object' ? result.message : ''
+        const snippet = text ? text.slice(0, 240) : ''
+        throw new Error(
+          `Proxy HTTP ${response.status} (${response.statusText}). ${serverMessage || ''} ${
+            contentType ? `content-type: ${contentType}.` : ''
+          }${snippet ? ` Details: ${snippet}` : ''}`.trim()
+        )
+      }
+
+      if (!result) {
+        const snippet = text ? text.slice(0, 240) : ''
+        throw new Error(
+          `Antwort ist kein JSON (Proxy).${contentType ? ` content-type: ${contentType}.` : ''}${
+            snippet ? ` Details: ${snippet}` : ''
+          }`
+        )
+      }
+
       return result
     }
 
