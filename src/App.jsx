@@ -1,8 +1,9 @@
 import { useState } from 'react'
 
-// ⚠️ WICHTIG: Nach jeder Änderung am Google Apps Script neue Bereitstellung erstellen
-// und diese URL hier aktualisieren!
-const GAS_URL = 'DEINE_GOOGLE_APPS_SCRIPT_URL_HIER'
+// Google Apps Script Web App URL
+// Lokal: in `.env` setzen als VITE_GAS_URL=https://...
+// Netlify: Site settings → Environment variables → VITE_GAS_URL
+const GAS_URL = import.meta?.env?.VITE_GAS_URL || ''
 
 // Hilfsfunktion: Datum-Muster im Dateinamen finden
 const findDatePatterns = (fileName) => {

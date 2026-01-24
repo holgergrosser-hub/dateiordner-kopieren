@@ -28,6 +28,20 @@ npm run preview
 
 ## Google Apps Script
 
-In [src/App.jsx](src/App.jsx) muss `GAS_URL` auf die URL deiner GAS-Web-App gesetzt werden.
+Die App erwartet die URL deiner GAS-Web-App als Environment Variable:
+
+- `VITE_GAS_URL=https://...`
+
+### Lokal
+
+Lege eine Datei `.env` an:
+
+```bash
+VITE_GAS_URL=https://script.google.com/macros/s/....../exec
+```
+
+### Netlify
+
+Netlify → Site settings → Environment variables → `VITE_GAS_URL` setzen.
 
 Hinweis: Wenn du das Apps Script änderst, musst du eine neue Bereitstellung erstellen und die URL ggf. aktualisieren.
