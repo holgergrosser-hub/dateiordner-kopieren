@@ -7,6 +7,9 @@ const GAS_URL = import.meta?.env?.VITE_GAS_URL || ''
 
 const LOCAL_STORAGE_GAS_URL_KEY = 'folder-workflow.gasUrl'
 
+const USE_NETLIFY_PROXY = import.meta?.env?.PROD
+const NETLIFY_PROXY_ENDPOINT = '/.netlify/functions/gas-proxy'
+
 // Hilfsfunktion: Datum-Muster im Dateinamen finden
 const findDatePatterns = (fileName) => {
   const patterns = [
@@ -244,9 +247,24 @@ export default function App() {
 
   // API Call Helper - FormData (kein Content-Type Header!)
   const callAPI = async (action, params = {}) => {
+    if (USE_NETLIFY_PROXY) {
+      const response = await fetch(NETLIFY_PROXY_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ action, params }),
+      })
+
+      const result = await response.json().catch(() => null)
+      if (!result) throw new Error('Antwort ist kein JSON (Proxy)')
+      return result
+    }
+
+    // Lokal (ohne Netlify Functions): direkt ins GAS (FormData, kein Content-Type Header!)
     if (!effectiveGasUrl) {
       throw new Error(
-        'GAS URL fehlt. Bitte VITE_GAS_URL setzen (Netlify Environment Variables oder lokal in .env) oder oben manuell eintragen.'
+        'GAS URL fehlt. Bitte VITE_GAS_URL setzen (lokal in .env) oder oben manuell eintragen.'
       )
     }
 
@@ -273,7 +291,6 @@ export default function App() {
       return response.json()
     }
 
-    // Häufigster Fall bei falscher URL: HTML (Netlify index.html) statt JSON
     const bodyText = await response.text().catch(() => '')
     const snippet = bodyText ? bodyText.slice(0, 200) : ''
     throw new Error(`Antwort ist kein JSON. ${snippet}`)
@@ -450,7 +467,7 @@ export default function App() {
           </div>
 
           {/* Messages */}
-          {!GAS_URL && (
+          {!USE_NETLIFY_PROXY && !GAS_URL && (
             <div style={styles.alert('info')}>
               <strong>Konfiguration:</strong> <code>VITE_GAS_URL</code> ist in diesem Build leer.
               <br />
