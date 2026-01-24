@@ -21,13 +21,14 @@ const JOBS_KEY = 'copyJobs.pending'
 const JOB_PREFIX = 'copyJob:'
 
 // Wie viel Arbeit pro Status-Poll? (klein halten, damit Web-App/Proxy nicht timeouten)
-const STATUS_RUN_BUDGET_MS = 2500
-const STATUS_MAX_FILE_COPIES = 20
-const STATUS_MAX_SUBFOLDERS = 8
+// Hinweis: Für sehr große Ordner lieber kleinere Werte, damit einzelne Requests nicht in Timeouts laufen.
+const STATUS_RUN_BUDGET_MS = 1500
+const STATUS_MAX_FILE_COPIES = 4
+const STATUS_MAX_SUBFOLDERS = 2
 
 // Für große Ordner kann auch das Dateilisten rekursiv lange dauern.
 // Deshalb ebenfalls chunked (Job + Polling), ohne Trigger.
-const LIST_RUN_BUDGET_MS = 2500
+const LIST_RUN_BUDGET_MS = 2000
 const LIST_MAX_FILES_PER_RUN = 120
 const LIST_MAX_FOLDERS_PER_RUN = 30
 
@@ -45,7 +46,9 @@ function doPost(e) {
         return jsonResponse(getFolderInfoAction_(data.sourceUrl))
 
       case 'copyFolderStart':
-        return jsonResponse(copyFolderStartAction_(data.sourceUrl, data.newFolderName))
+        return jsonResponse(
+          copyFolderStartAction_(data.sourceUrl, data.newFolderName, String(data.placeNextToSource) === 'true')
+        )
 
       case 'copyFolderStatus':
         return jsonResponse(copyFolderStatusAction_(data.jobId))
@@ -72,6 +75,19 @@ function doPost(e) {
   } catch (error) {
     return jsonResponse({ success: false, message: String(error) })
   }
+}
+
+function resolveBackupParentFolder_(sourceFolderId, placeNextToSource) {
+  if (placeNextToSource) {
+    try {
+      const sourceFolder = DriveApp.getFolderById(sourceFolderId)
+      const parents = sourceFolder.getParents()
+      if (parents && parents.hasNext()) return parents.next()
+    } catch (_) {
+      // fall back to configured parent
+    }
+  }
+  return DriveApp.getFolderById(CONFIG.PARENT_FOLDER_ID)
 }
 
 function jsonResponse(obj) {
@@ -148,7 +164,8 @@ function copyFolderStartAction_(sourceUrl, newFolderName) {
     const sourceFolderId = extractIdFromUrl_(sourceUrl)
     if (!sourceFolderId) return { success: false, message: 'Ungültige Google Drive URL' }
 
-    const parentFolder = DriveApp.getFolderById(CONFIG.PARENT_FOLDER_ID)
+    const placeNextToSource = arguments.length >= 3 ? Boolean(arguments[2]) : false
+    const parentFolder = resolveBackupParentFolder_(sourceFolderId, placeNextToSource)
     const targetFolder = parentFolder.createFolder(String(newFolderName))
 
     const jobId = Utilities.getUuid()
@@ -203,7 +220,8 @@ function copyFolderStatusAction_(jobId) {
   // Bei jedem Poll einen kleinen Arbeits-Chunk ausführen.
   if (job.status === 'running') {
     const lock = LockService.getScriptLock()
-    if (lock.tryLock(5000)) {
+    // Wichtig: nie lange auf Lock warten, sonst laufen Netlify/Browser in Timeouts.
+    if (lock.tryLock(200)) {
       try {
         processCopyJobChunk_(job, STATUS_RUN_BUDGET_MS, STATUS_MAX_FILE_COPIES, STATUS_MAX_SUBFOLDERS)
         saveJob_(job)
@@ -283,7 +301,8 @@ function listFilesStatusAction_(jobId) {
 
   if (job.status === 'running') {
     const lock = LockService.getScriptLock()
-    if (lock.tryLock(5000)) {
+    // Wichtig: nie lange auf Lock warten, sonst laufen Netlify/Browser in Timeouts.
+    if (lock.tryLock(200)) {
       try {
         chunk = processListFilesJobChunk_(
           job,

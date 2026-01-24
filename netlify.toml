@@ -2,8 +2,15 @@
   command = "npm install && npm run build"
   publish = "dist"
 
+[functions]
+  directory = "netlify/functions"
+
 [build.environment]
   NODE_VERSION = "18"
+  # Guardrail: helps identify the correct app in builds/logs if needed
+  VITE_APP_ID = "folder-workflow"
+  # Use Netlify Functions proxy in Netlify deployments (also works on custom domains).
+  VITE_USE_NETLIFY_PROXY = "true"
 
 [[redirects]]
   from = "/*"

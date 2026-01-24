@@ -42,9 +42,30 @@ VITE_GAS_URL=https://script.google.com/macros/s/....../exec
 
 ### Netlify
 
-Netlify → Site settings → Environment variables → `VITE_GAS_URL` setzen.
+Netlify → Site settings → Environment variables setzen:
 
-Wichtig: Danach einmal **"Clear cache and deploy"** auslösen, weil Vite Environment Variables beim Build in das Bundle geschrieben werden.
+- **Empfohlen (für Proxy):** `GAS_URL=https://.../exec`
+- Alternativ: `VITE_GAS_URL=https://.../exec` (wird auch vom Proxy gelesen)
+
+Wichtig: Wenn du **nur** `GAS_URL` setzt (Proxy), ist **kein** Rebuild für die Function nötig.
+Wenn du `VITE_GAS_URL` im Frontend nutzen willst, danach einmal **"Clear cache and deploy"** auslösen,
+weil Vite Environment Variables beim Build in das Bundle geschrieben werden.
+
+### WICHTIG: Trennung sauber halten (Option B)
+
+Damit ihr nicht aus Versehen wieder die falsche App deployed (z.B. das Hauptprojekt `nc-rescue`), richtet diese Webapp als **eigene Netlify Site** ein:
+
+- **Base directory:** `_external/dateiordner-kopieren`
+- **Build command:** `npm run build`
+- **Publish directory:** `dist`
+- **Functions directory:** `netlify/functions`
+
+Zusatz (für Netlify Deployments / Custom Domains):
+- `VITE_USE_NETLIFY_PROXY=true` (ist in `netlify.toml` bereits gesetzt)
+
+Erwarteter Endpoint in Production: `/.netlify/functions/gas-proxy`
+
+Wenn dieser Endpoint fehlt, zeigt die App ab jetzt eine rote Fehlermeldung (Guardrail).
 
 ### Fallback (wenn `VITE_GAS_URL` im Build leer ist)
 

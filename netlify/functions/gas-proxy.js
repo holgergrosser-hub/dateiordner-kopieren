@@ -6,7 +6,8 @@ export async function handler(event) {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
   }
 
-  const TIMEOUT_MS = 8000
+  // Keep below common Netlify function limits; higher than 8s helps with cold starts.
+  const TIMEOUT_MS = 9500
 
   if (event.httpMethod === 'OPTIONS') {
     return {

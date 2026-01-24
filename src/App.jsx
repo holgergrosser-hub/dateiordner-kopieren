@@ -5,6 +5,9 @@ import { useEffect, useState } from 'react'
 // Netlify: Site settings → Environment variables → VITE_GAS_URL
 const GAS_URL = import.meta.env.VITE_GAS_URL || ''
 
+// Visible marker to avoid deploying/using the wrong app.
+const APP_ID = import.meta.env.VITE_APP_ID || 'folder-workflow'
+
 const LOCAL_STORAGE_GAS_URL_KEY = 'folder-workflow.gasUrl'
 
 const isRunningOnNetlify = () => {
@@ -16,7 +19,15 @@ const isRunningOnNetlify = () => {
   }
 }
 
-const USE_NETLIFY_PROXY = Boolean(import.meta.env.PROD) || isRunningOnNetlify()
+// IMPORTANT:
+// Do not enable the Netlify proxy just because this is a production build.
+// `vite preview` is also PROD but has no Netlify Functions, which would make the app look “broken”.
+// Instead, enable the proxy only when:
+// - we are actually running on Netlify (*.netlify.app), or
+// - it is explicitly enabled via an env var (recommended for custom domains on Netlify).
+const USE_NETLIFY_PROXY =
+  String(import.meta.env.VITE_USE_NETLIFY_PROXY || '').toLowerCase() === 'true' ||
+  isRunningOnNetlify()
 const NETLIFY_PROXY_ENDPOINT = '/.netlify/functions/gas-proxy'
 
 const isDebugEnabled = () => {
@@ -73,6 +84,21 @@ const styles = {
     color: 'white',
     padding: '30px',
     textAlign: 'center',
+    position: 'relative',
+  },
+  appBadge: {
+    position: 'absolute',
+    top: '14px',
+    right: '14px',
+    padding: '6px 10px',
+    borderRadius: '999px',
+    background: 'rgba(255,255,255,0.16)',
+    border: '1px solid rgba(255,255,255,0.28)',
+    color: 'rgba(255,255,255,0.95)',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    fontSize: '12px',
+    letterSpacing: '0.3px',
+    userSelect: 'none',
   },
   title: {
     margin: 0,
@@ -239,6 +265,8 @@ const spinnerCSS = `
 export default function App() {
   const debug = isDebugEnabled()
 
+  const [proxyAvailable, setProxyAvailable] = useState(true)
+
   const [gasUrlManual, setGasUrlManual] = useState(() => {
     try {
       return localStorage.getItem(LOCAL_STORAGE_GAS_URL_KEY) || ''
@@ -248,6 +276,34 @@ export default function App() {
   })
 
   const effectiveGasUrl = (GAS_URL || gasUrlManual || '').trim()
+
+  // Guardrail: If we are on Netlify/Prod but the proxy function is missing,
+  // fail fast with a clear message (prevents "mystery timeouts" when the wrong site/baseDir is deployed).
+  useEffect(() => {
+    if (!USE_NETLIFY_PROXY) {
+      setProxyAvailable(true)
+      return
+    }
+
+    let cancelled = false
+
+    const check = async () => {
+      try {
+        const res = await fetch(NETLIFY_PROXY_ENDPOINT, { method: 'OPTIONS' })
+        if (cancelled) return
+        // gas-proxy returns 204 for OPTIONS; 404 usually means wrong deploy/base directory.
+        setProxyAvailable(res.status === 204 || res.ok)
+      } catch {
+        if (cancelled) return
+        setProxyAvailable(false)
+      }
+    }
+
+    check()
+    return () => {
+      cancelled = true
+    }
+  }, [USE_NETLIFY_PROXY])
 
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
@@ -263,6 +319,9 @@ export default function App() {
   const [sourceFolderName, setSourceFolderName] = useState('')
   const [loadingInfo, setLoadingInfo] = useState(false)
 
+  const [createBackup, setCreateBackup] = useState(true)
+  const [backupPlacement, setBackupPlacement] = useState('same') // 'same' | 'config'
+
   // Step 2 & 3: Arbeiten im ALT-ORDNER
   const [sourceFolderId, setSourceFolderId] = useState(null)
   const [copiedFolderId, setCopiedFolderId] = useState(null)
@@ -274,21 +333,44 @@ export default function App() {
   // Step 3: Umbenennung
   const [replaceWith, setReplaceWith] = useState('')
 
+  const isRetryableMessage = (message) => {
+    const m = String(message || '').toLowerCase()
+    if (!m) return false
+    return (
+      m.includes('timeout waiting for gas') ||
+      m.includes('proxy error') ||
+      m.includes('verbindungsfehler') ||
+      m.includes('network') ||
+      m.includes('fetch') ||
+      m.includes('aborted')
+    )
+  }
+
   useEffect(() => {
     if (!copyJob?.jobId) return
 
     let cancelled = false
 
-    const poll = async () => {
+    const pollOnce = async () => {
       try {
         const res = await callAPI('copyFolderStatus', { jobId: copyJob.jobId })
         if (cancelled) return
 
         if (!res || res.success !== true) {
+          const msg = res?.message || 'Job-Status konnte nicht geladen werden'
+          // Treat proxy/GAS timeouts as transient and keep polling.
+          if (isRetryableMessage(msg)) {
+            setError(msg)
+            return
+          }
+
           setCopyJob(null)
-          setError(res?.message || 'Job-Status konnte nicht geladen werden')
+          setError(msg)
           return
         }
+
+        // Clear previous transient errors once we get a good response.
+        setError(null)
 
         setCopyJob((prev) => ({ ...prev, ...res }))
 
@@ -325,16 +407,27 @@ export default function App() {
         }
       } catch (err) {
         if (cancelled) return
+        const msg = 'Verbindungsfehler: ' + (err?.message || String(err))
+        if (isRetryableMessage(msg)) {
+          setError(msg)
+          return
+        }
         setCopyJob(null)
-        setError('Verbindungsfehler: ' + err.message)
+        setError(msg)
       }
     }
 
-    poll()
-    const id = setInterval(poll, 2000)
+    let timerId = null
+    const loop = async () => {
+      await pollOnce()
+      if (cancelled) return
+      timerId = setTimeout(loop, 2000)
+    }
+
+    loop()
     return () => {
       cancelled = true
-      clearInterval(id)
+      if (timerId) clearTimeout(timerId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [copyJob?.jobId])
@@ -344,16 +437,24 @@ export default function App() {
 
     let cancelled = false
 
-    const poll = async () => {
+    const pollOnce = async () => {
       try {
         const res = await callAPI('listFilesStatus', { jobId: listJob.jobId })
         if (cancelled) return
 
         if (!res || res.success !== true) {
+          const msg = res?.message || 'Dateiliste-Status konnte nicht geladen werden'
+          if (isRetryableMessage(msg)) {
+            setError(msg)
+            return
+          }
           setListJob(null)
-          setError(res?.message || 'Dateiliste-Status konnte nicht geladen werden')
+          setError(msg)
           return
         }
+
+        // Clear previous transient errors once we get a good response.
+        setError(null)
 
         setListJob((prev) => ({ ...prev, ...res }))
 
@@ -383,23 +484,35 @@ export default function App() {
         }
       } catch (err) {
         if (cancelled) return
+        const msg = 'Verbindungsfehler: ' + (err?.message || String(err))
+        if (isRetryableMessage(msg)) {
+          setError(msg)
+          return
+        }
         setListJob(null)
-        setError('Verbindungsfehler: ' + err.message)
+        setError(msg)
       }
     }
 
-    poll()
-    const id = setInterval(poll, 2000)
+    let timerId = null
+    const loop = async () => {
+      await pollOnce()
+      if (cancelled) return
+      timerId = setTimeout(loop, 2000)
+    }
+
+    loop()
     return () => {
       cancelled = true
-      clearInterval(id)
+      if (timerId) clearTimeout(timerId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listJob?.jobId])
 
   // API Call Helper - FormData (kein Content-Type Header!)
   const callAPI = async (action, params = {}) => {
-    if (USE_NETLIFY_PROXY) {
+    // If proxy is missing, fall back to direct GAS (requires effectiveGasUrl).
+    if (USE_NETLIFY_PROXY && proxyAvailable) {
       const response = await fetch(NETLIFY_PROXY_ENDPOINT, {
         method: 'POST',
         headers: {
@@ -439,6 +552,18 @@ export default function App() {
       }
 
       return result
+    }
+
+    if (USE_NETLIFY_PROXY && !proxyAvailable) {
+      if (!effectiveGasUrl) {
+        throw new Error(
+          'Netlify Proxy (/.netlify/functions/gas-proxy) ist nicht erreichbar. ' +
+            'Das ist fast immer ein falsches Deployment/Base directory. ' +
+            'Bitte Netlify Site so konfigurieren, dass die Function gas-proxy existiert, ' +
+            'oder GAS-URL oben manuell eintragen.'
+        )
+      }
+      // continue with direct GAS below
     }
 
     // Lokal (ohne Netlify Functions): direkt ins GAS (FormData, kein Content-Type Header!)
@@ -488,6 +613,7 @@ export default function App() {
 
       if (result.success) {
         setSourceFolderName(result.folderName)
+        setSourceFolderId(result.folderId)
         setNewFolderName(result.suggestedBackupName)
         setSuccess(`📂 Ordner gefunden: "${result.folderName}"`)
       } else {
@@ -502,7 +628,7 @@ export default function App() {
 
   // Step 1: Ordner kopieren
   const handleCopyFolder = async () => {
-    if (!sourceUrl || !newFolderName) {
+    if (!sourceUrl || (createBackup && !newFolderName)) {
       setError('Bitte alle Felder ausfüllen')
       return
     }
@@ -512,9 +638,51 @@ export default function App() {
     setSuccess(null)
 
     try {
+      // Optional: Backup überspringen und direkt in Schritt 2 (Dateiliste) starten.
+      if (!createBackup) {
+        let folderId = sourceFolderId
+
+        if (!folderId) {
+          const info = await callAPI('getFolderInfo', { sourceUrl })
+          if (!info?.success) {
+            setError(info?.message || 'Ordner nicht gefunden')
+            return
+          }
+          folderId = info.folderId
+          setSourceFolderName(info.folderName)
+          setSourceFolderId(info.folderId)
+        }
+
+        const started = await callAPI('listFilesStart', { folderId })
+        if (!started?.success) {
+          setError(started?.message || 'Dateiliste konnte nicht gestartet werden')
+          return
+        }
+
+        setCopiedFolderId(null)
+        setFiles([])
+        setDetectedDates([])
+        setCopyJob(null)
+        setListJob({
+          jobId: started.jobId,
+          status: started.status || 'running',
+          folderId: started.folderId,
+          folderName: started.folderName,
+          progress: started.progress || null,
+        })
+
+        setSuccess('ℹ️ Backup übersprungen. Dateien werden geladen…')
+        setStep(2)
+        return
+      }
+
       if (USE_NETLIFY_PROXY) {
         // Netlify/Production: async Job starten (vermeidet Timeouts bei großen Ordnern)
-        const started = await callAPI('copyFolderStart', { sourceUrl, newFolderName })
+        const started = await callAPI('copyFolderStart', {
+          sourceUrl,
+          newFolderName,
+          placeNextToSource: backupPlacement === 'same',
+        })
 
         if (!started?.success) {
           setError(started?.message || 'Fehler beim Starten des Kopier-Jobs')
@@ -640,11 +808,21 @@ export default function App() {
 
       <div style={styles.container}>
         <div style={styles.header}>
+          <div style={styles.appBadge}>{APP_ID}</div>
           <h1 style={styles.title}>📁 Ordner Kopieren & Umbenennen</h1>
           <p style={styles.subtitle}>Kopie erstellen, dann im Original umbenennen</p>
         </div>
 
         <div style={styles.content}>
+          {USE_NETLIFY_PROXY && !proxyAvailable && (
+            <div style={styles.alert('error')}>
+              ❌ <strong>Deployment-Problem:</strong> <code>gas-proxy</code> Function nicht gefunden.
+              <br />
+              Das passiert, wenn die falsche Netlify Site oder ein falsches <em>Base directory</em> deployed wurde.
+              <br />
+              Erwartet: <code>/.netlify/functions/gas-proxy</code>
+            </div>
+          )}
           {/* Stepper */}
           <div style={styles.stepper}>
             <div style={styles.stepperLine} />
@@ -740,11 +918,51 @@ export default function App() {
           {/* Step 1: Ordner kopieren */}
           {step === 1 && (
             <div style={styles.card}>
-              <h2 style={{ marginTop: 0, marginBottom: '20px' }}>📋 Schritt 1: Alt-Ordner kopieren (Backup)</h2>
+              <h2 style={{ marginTop: 0, marginBottom: '20px' }}>📋 Schritt 1: Backup (optional)</h2>
 
               <div style={styles.infoBox}>
-                💡 <strong>Hinweis:</strong> Zuerst wird eine Kopie als Backup erstellt. Danach arbeiten wir im{' '}
+                💡 <strong>Hinweis:</strong> Optional wird zuerst eine Kopie als Backup erstellt. Danach arbeiten wir im{' '}
                 <strong>Alt-Ordner</strong> (Original).
+              </div>
+
+              <div style={{ ...styles.inputGroup, marginTop: '-8px' }}>
+                <label style={{ ...styles.label, marginBottom: '6px' }}>Backup erstellen?</label>
+                <label style={{ display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={createBackup}
+                    onChange={(e) => {
+                      setCreateBackup(e.target.checked)
+                      setError(null)
+                      setSuccess(null)
+                    }}
+                  />
+                  <span>Ja, Backup anlegen (empfohlen)</span>
+                </label>
+
+                {createBackup && (
+                  <div style={{ marginTop: '10px', fontSize: '14px' }}>
+                    <div style={{ marginBottom: '6px', fontWeight: 600, color: '#333' }}>Wo soll das Backup liegen?</div>
+                    <label style={{ display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="backupPlacement"
+                        checked={backupPlacement === 'same'}
+                        onChange={() => setBackupPlacement('same')}
+                      />
+                      <span>Im gleichen Verzeichnis wie der Alt-Ordner (gleiches Elternverzeichnis)</span>
+                    </label>
+                    <label style={{ display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer', marginTop: '6px' }}>
+                      <input
+                        type="radio"
+                        name="backupPlacement"
+                        checked={backupPlacement === 'config'}
+                        onChange={() => setBackupPlacement('config')}
+                      />
+                      <span>Im konfigurierten Backup-Ordner (CONFIG.PARENT_FOLDER_ID)</span>
+                    </label>
+                  </div>
+                )}
               </div>
 
               <div style={styles.inputGroup}>
@@ -796,6 +1014,7 @@ export default function App() {
                   placeholder="z.B. Nachweise_2024 (Jahr -1)"
                   value={newFolderName}
                   onChange={(e) => setNewFolderName(e.target.value)}
+                  disabled={!createBackup}
                 />
                 <small style={{ color: '#666', marginTop: '5px', display: 'block' }}>
                   💡 Vorschlag: Gleiches wie Alt-Ordner, aber Jahr -1
@@ -803,12 +1022,12 @@ export default function App() {
               </div>
 
               <button
-                style={styles.button('primary', loading || !sourceUrl || !newFolderName)}
+                style={styles.button('primary', loading || !sourceUrl || (createBackup && !newFolderName))}
                 onClick={handleCopyFolder}
-                disabled={loading || !sourceUrl || !newFolderName}
+                disabled={loading || !sourceUrl || (createBackup && !newFolderName)}
               >
                 {loading && <span style={styles.spinner} />}
-                {loading ? 'Wird kopiert...' : '📁 Kopieren & weiter'}
+                {loading ? 'Bitte warten…' : createBackup ? '📁 Backup erstellen & weiter' : '➡️ Ohne Backup weiter'}
               </button>
             </div>
           )}
@@ -821,7 +1040,8 @@ export default function App() {
               <div style={styles.infoBox}>
                 📂 <strong>Alt-Ordner:</strong> Hier werden die Dateien umbenannt.
                 <br />
-                💾 <strong>Backup:</strong> "{newFolderName}" wurde als Sicherung erstellt.
+                💾 <strong>Backup:</strong>{' '}
+                {createBackup ? `"${newFolderName}" wurde als Sicherung erstellt.` : 'übersprungen.'}
               </div>
 
               {copyJob && (
