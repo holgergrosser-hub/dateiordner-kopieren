@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 // Google Apps Script Web App URL
 // Lokal: in `.env` setzen als VITE_GAS_URL=https://...
@@ -254,6 +254,8 @@ export default function App() {
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(null)
 
+  const [copyJob, setCopyJob] = useState(null)
+
   // Step 1: Ordner kopieren
   const [sourceUrl, setSourceUrl] = useState('')
   const [newFolderName, setNewFolderName] = useState('')
@@ -270,6 +272,70 @@ export default function App() {
 
   // Step 3: Umbenennung
   const [replaceWith, setReplaceWith] = useState('')
+
+  useEffect(() => {
+    if (!copyJob?.jobId) return
+
+    let cancelled = false
+
+    const poll = async () => {
+      try {
+        const res = await callAPI('copyFolderStatus', { jobId: copyJob.jobId })
+        if (cancelled) return
+
+        if (!res || res.success !== true) {
+          setCopyJob(null)
+          setError(res?.message || 'Job-Status konnte nicht geladen werden')
+          return
+        }
+
+        setCopyJob((prev) => ({ ...prev, ...res }))
+
+        if (res.status === 'error') {
+          setCopyJob(null)
+          setError(res.message || 'Fehler beim Kopieren (Job)')
+          return
+        }
+
+        if (res.status === 'done') {
+          // Jetzt Dateien aus dem Alt-Ordner (Original) laden
+          const list = await callAPI('listFiles', { folderId: copyJob.sourceFolderId })
+          if (cancelled) return
+
+          if (list?.success) {
+            setFiles(list.files || [])
+
+            const allDates = []
+            for (const file of list.files || []) {
+              allDates.push(...findDatePatterns(file.name))
+            }
+            setDetectedDates([...new Set(allDates)])
+
+            setSuccess(
+              `✅ Backup "${copyJob.newFolderName}" fertig! Jetzt arbeiten wir im Alt-Ordner.`
+            )
+            setStep(2)
+          } else {
+            setError(list?.message || 'Dateiliste konnte nicht geladen werden')
+          }
+
+          setCopyJob(null)
+        }
+      } catch (err) {
+        if (cancelled) return
+        setCopyJob(null)
+        setError('Verbindungsfehler: ' + err.message)
+      }
+    }
+
+    poll()
+    const id = setInterval(poll, 2000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [copyJob?.jobId])
 
   // API Call Helper - FormData (kein Content-Type Header!)
   const callAPI = async (action, params = {}) => {
@@ -386,27 +452,53 @@ export default function App() {
     setSuccess(null)
 
     try {
-      const result = await callAPI('copyFolder', {
-        sourceUrl,
-        newFolderName,
-      })
+      if (USE_NETLIFY_PROXY) {
+        // Netlify/Production: async Job starten (vermeidet Timeouts bei großen Ordnern)
+        const started = await callAPI('copyFolderStart', { sourceUrl, newFolderName })
 
-      if (result.success) {
-        setSourceFolderId(result.sourceFolderId)
-        setCopiedFolderId(result.folderId)
-        setFiles(result.sourceFiles || [])
-
-        // Datums-Muster finden
-        const allDates = []
-        for (const file of result.sourceFiles || []) {
-          allDates.push(...findDatePatterns(file.name))
+        if (!started?.success) {
+          setError(started?.message || 'Fehler beim Starten des Kopier-Jobs')
+          return
         }
-        setDetectedDates([...new Set(allDates)])
 
-        setSuccess(`✅ Kopie "${newFolderName}" erstellt! Jetzt arbeiten wir im Alt-Ordner.`)
+        setSourceFolderId(started.sourceFolderId)
+        setCopiedFolderId(started.folderId)
+        setFiles([])
+        setDetectedDates([])
+
+        setCopyJob({
+          jobId: started.jobId,
+          status: 'running',
+          sourceFolderId: started.sourceFolderId,
+          targetFolderId: started.folderId,
+          newFolderName,
+        })
+
+        setSuccess('⏳ Backup wird im Hintergrund erstellt…')
         setStep(2)
       } else {
-        setError(result.message || 'Fehler beim Kopieren')
+        // Lokal: synchron (funktioniert meistens, weil Browser + GAS länger Zeit haben)
+        const result = await callAPI('copyFolder', {
+          sourceUrl,
+          newFolderName,
+        })
+
+        if (result.success) {
+          setSourceFolderId(result.sourceFolderId)
+          setCopiedFolderId(result.folderId)
+          setFiles(result.sourceFiles || [])
+
+          const allDates = []
+          for (const file of result.sourceFiles || []) {
+            allDates.push(...findDatePatterns(file.name))
+          }
+          setDetectedDates([...new Set(allDates)])
+
+          setSuccess(`✅ Kopie "${newFolderName}" erstellt! Jetzt arbeiten wir im Alt-Ordner.`)
+          setStep(2)
+        } else {
+          setError(result.message || 'Fehler beim Kopieren')
+        }
       }
     } catch (err) {
       setError('Verbindungsfehler: ' + err.message)
@@ -669,6 +761,23 @@ export default function App() {
                 <br />
                 💾 <strong>Backup:</strong> "{newFolderName}" wurde als Sicherung erstellt.
               </div>
+
+              {copyJob && (
+                <div style={styles.alert('info')}>
+                  <strong>⏳ Backup läuft…</strong>
+                  <div style={{ marginTop: '8px', fontSize: '13px' }}>
+                    Status: {copyJob.status || 'running'}
+                    {copyJob.progress && (
+                      <> — Dateien kopiert: {copyJob.progress.copiedFiles || 0}, Ordner erstellt:{' '}
+                      {copyJob.progress.createdFolders || 0}, Warteschlange:{' '}
+                      {copyJob.progress.pendingFolders || 0}</>
+                    )}
+                  </div>
+                  <div style={{ marginTop: '8px', fontSize: '13px' }}>
+                    Hinweis: Große Ordner dauern mehrere Minuten. Diese Seite kann offen bleiben.
+                  </div>
+                </div>
+              )}
 
               {/* Erkannte Datums-Muster */}
               {detectedDates.length > 0 && (

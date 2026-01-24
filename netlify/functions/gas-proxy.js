@@ -1,4 +1,5 @@
 export async function handler(event) {
+  const startedAt = Date.now()
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
@@ -57,6 +58,14 @@ export async function handler(event) {
     }
   }
 
+  console.log(
+    JSON.stringify({
+      msg: 'gas-proxy request',
+      action,
+      paramsKeys: Object.keys(params || {}).length,
+    })
+  )
+
   try {
     const formBody = new URLSearchParams()
     formBody.append('action', action)
@@ -81,6 +90,15 @@ export async function handler(event) {
     } finally {
       clearTimeout(timeoutId)
     }
+
+    console.log(
+      JSON.stringify({
+        msg: 'gas-proxy upstream',
+        action,
+        status: response?.status,
+        durationMs: Date.now() - startedAt,
+      })
+    )
 
     const text = await response.text()
 
@@ -116,6 +134,13 @@ export async function handler(event) {
       String(err?.message || '').toLowerCase().includes('aborted')
 
     if (isAbort) {
+      console.log(
+        JSON.stringify({
+          msg: 'gas-proxy timeout',
+          action,
+          durationMs: Date.now() - startedAt,
+        })
+      )
       return {
         statusCode: 200,
         headers: { ...corsHeaders, 'content-type': 'application/json; charset=utf-8' },
@@ -128,6 +153,15 @@ export async function handler(event) {
         }),
       }
     }
+
+    console.log(
+      JSON.stringify({
+        msg: 'gas-proxy error',
+        action,
+        durationMs: Date.now() - startedAt,
+        error: String(err?.message || err),
+      })
+    )
 
     return {
       statusCode: 200,

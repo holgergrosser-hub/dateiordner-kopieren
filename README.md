@@ -51,3 +51,21 @@ Wichtig: Danach einmal **"Clear cache and deploy"** auslösen, weil Vite Environ
 Die App zeigt dann oben ein Eingabefeld, in das du die GAS-URL einmalig eintragen kannst (wird im Browser gespeichert).
 
 Hinweis: Wenn du das Apps Script änderst, musst du eine neue Bereitstellung erstellen und die URL ggf. aktualisieren.
+
+### Actions (API)
+
+Die Web-App spricht mit GAS über einen `action`-Parameter.
+
+- `getFolderInfo` → `{ sourceUrl }`
+- `copyFolderStart` → `{ sourceUrl, newFolderName }` → startet einen Async-Job, gibt `jobId` zurück
+- `copyFolderStatus` → `{ jobId }` → Polling, liefert `status: running|done|error` + `progress`
+- `listFiles` → `{ folderId }` → Dateien im Alt-Ordner (rekursiv)
+- `renameFiles` → `{ folderId, searchPattern, replacePattern }`
+
+Hinweis: Lokal (ohne Netlify Proxy) wird weiterhin das Legacy-Action `copyFolder` synchron genutzt.
+
+### Apps Script Code
+
+Eine passende Referenz-Implementierung liegt in `apps-script/Code.gs` (im Repo) und kann 1:1 in ein GAS-Projekt kopiert werden.
+
+Wichtig für große Ordner: Das Kopieren läuft über einen Zeit-Trigger (`processCopyJobs`) weiter, damit keine HTTP-Timeouts entstehen.
