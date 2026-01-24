@@ -5,6 +5,8 @@ export async function handler(event) {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
   }
 
+  const TIMEOUT_MS = 8000
+
   if (event.httpMethod === 'OPTIONS') {
     return {
       statusCode: 204,
@@ -63,13 +65,22 @@ export async function handler(event) {
       formBody.append(key, String(value))
     }
 
-    const response = await fetch(gasUrl, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
-      },
-      body: formBody.toString(),
-    })
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS)
+
+    let response
+    try {
+      response = await fetch(gasUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        },
+        body: formBody.toString(),
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(timeoutId)
+    }
 
     const text = await response.text()
 
@@ -100,6 +111,24 @@ export async function handler(event) {
       body: JSON.stringify(json),
     }
   } catch (err) {
+    const isAbort =
+      err?.name === 'AbortError' ||
+      String(err?.message || '').toLowerCase().includes('aborted')
+
+    if (isAbort) {
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'content-type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          success: false,
+          message:
+            `Timeout waiting for GAS after ${TIMEOUT_MS}ms. ` +
+            'This usually means the Apps Script action is slow (e.g. copying a large folder). ' +
+            'Reduce folder size, or change the Apps Script to run the long task asynchronously (jobId + polling).',
+        }),
+      }
+    }
+
     return {
       statusCode: 200,
       headers: { ...corsHeaders, 'content-type': 'application/json; charset=utf-8' },
