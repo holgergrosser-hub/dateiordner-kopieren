@@ -5,6 +5,8 @@ import { useState } from 'react'
 // Netlify: Site settings → Environment variables → VITE_GAS_URL
 const GAS_URL = import.meta?.env?.VITE_GAS_URL || ''
 
+const LOCAL_STORAGE_GAS_URL_KEY = 'folder-workflow.gasUrl'
+
 // Hilfsfunktion: Datum-Muster im Dateinamen finden
 const findDatePatterns = (fileName) => {
   const patterns = [
@@ -208,6 +210,16 @@ const spinnerCSS = `
 `
 
 export default function App() {
+  const [gasUrlManual, setGasUrlManual] = useState(() => {
+    try {
+      return localStorage.getItem(LOCAL_STORAGE_GAS_URL_KEY) || ''
+    } catch {
+      return ''
+    }
+  })
+
+  const effectiveGasUrl = (GAS_URL || gasUrlManual || '').trim()
+
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -232,9 +244,9 @@ export default function App() {
 
   // API Call Helper - FormData (kein Content-Type Header!)
   const callAPI = async (action, params = {}) => {
-    if (!GAS_URL) {
+    if (!effectiveGasUrl) {
       throw new Error(
-        'GAS URL fehlt. Bitte VITE_GAS_URL setzen (Netlify Environment Variables oder lokal in .env).'
+        'GAS URL fehlt. Bitte VITE_GAS_URL setzen (Netlify Environment Variables oder lokal in .env) oder oben manuell eintragen.'
       )
     }
 
@@ -244,7 +256,7 @@ export default function App() {
       formData.append(key, params[key])
     })
 
-    const response = await fetch(GAS_URL, {
+    const response = await fetch(effectiveGasUrl, {
       method: 'POST',
       body: formData,
     })
@@ -439,9 +451,47 @@ export default function App() {
 
           {/* Messages */}
           {!GAS_URL && (
-            <div style={styles.alert('error')}>
-              ❌ <strong>Konfiguration fehlt:</strong> Setze <code>VITE_GAS_URL</code> auf die URL deiner Google Apps Script
-              Web-App (z.B. endet oft mit <code>/exec</code>). Danach neu deployen.
+            <div style={styles.alert('info')}>
+              <strong>Konfiguration:</strong> <code>VITE_GAS_URL</code> ist in diesem Build leer.
+              <br />
+              Du kannst die GAS-URL hier einmalig eintragen (wird im Browser gespeichert) oder Netlify neu deployen.
+              <div style={{ marginTop: '12px' }}>
+                <label style={{ ...styles.label, marginBottom: '6px' }}>GAS Web-App URL:</label>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <input
+                    type="text"
+                    style={{ ...styles.input, flex: 1 }}
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    value={gasUrlManual}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      setGasUrlManual(value)
+                      try {
+                        localStorage.setItem(LOCAL_STORAGE_GAS_URL_KEY, value)
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                  />
+                  <button
+                    style={styles.button('secondary', false)}
+                    onClick={() => {
+                      setGasUrlManual('')
+                      try {
+                        localStorage.removeItem(LOCAL_STORAGE_GAS_URL_KEY)
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                  >
+                    Leeren
+                  </button>
+                </div>
+              </div>
+              <div style={{ marginTop: '10px', fontSize: '13px', color: '#0c5460' }}>
+                Hinweis: In Netlify muss die Variable gesetzt sein und danach ein "Clear cache and deploy" laufen,
+                weil Vite Env-Variablen beim Build eingebettet werden.
+              </div>
             </div>
           )}
           {error && <div style={styles.alert('error')}>❌ {error}</div>}

@@ -44,4 +44,10 @@ VITE_GAS_URL=https://script.google.com/macros/s/....../exec
 
 Netlify → Site settings → Environment variables → `VITE_GAS_URL` setzen.
 
+Wichtig: Danach einmal **"Clear cache and deploy"** auslösen, weil Vite Environment Variables beim Build in das Bundle geschrieben werden.
+
+### Fallback (wenn `VITE_GAS_URL` im Build leer ist)
+
+Die App zeigt dann oben ein Eingabefeld, in das du die GAS-URL einmalig eintragen kannst (wird im Browser gespeichert).
+
 Hinweis: Wenn du das Apps Script änderst, musst du eine neue Bereitstellung erstellen und die URL ggf. aktualisieren.
